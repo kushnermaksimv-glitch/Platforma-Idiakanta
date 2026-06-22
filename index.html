@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, orientation=landscape">
-    <title>Cosmic Cat World Online</title>
+    <title>Cosmic Cat World: Online</title>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; touch-action: none; }
-        body, html { width: 100%; height: 100%; overflow: hidden; background: #03030c; font-family: 'Courier New', monospace; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #04020d; font-family: 'Courier New', monospace; }
         #game-container { position: relative; width: 100vw; height: 100vh; }
         canvas { display: block; width: 100%; height: 100%; }
         
-        /* Кнопка прыжка под правый палец */
+        /* Кнопка прыжка для правой руки */
         #jump-btn {
             position: absolute; bottom: 25px; right: 35px; width: 85px; height: 85px;
             background: rgba(0, 255, 204, 0.15); border: 4px dashed #00ffcc; border-radius: 50%;
@@ -19,21 +19,294 @@
         }
         #jump-btn:active { background: rgba(0, 255, 204, 0.5); color: #fff; }
 
-        /* Игровой интерфейс */
+        /* Игровой оверлей и рейтинг */
         #ui-layer {
             position: absolute; top: 15px; left: 15px; color: #fff; font-size: 12px; font-weight: bold;
             background: rgba(10, 10, 26, 0.85); padding: 12px; border-radius: 6px; border: 2px solid #3d2b55;
-            pointer-events: none; min-width: 200px;
+            pointer-events: none; min-width: 220px; z-index: 20; box-shadow: 0 0 15px rgba(255, 0, 255, 0.1);
         }
+
+        /* Окно системных уведомлений/ошибок */
+        #status-screen {
+            display: flex; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #060613; color: #00ffcc; text-align: center;
+            justify-content: center; align-items: center; flex-direction: column; z-index: 9999; padding: 20px;
+        }
+
         #rotate-message {
             display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: #050510; color: #ff00ff; text-align: center; justify-content: center;
-            align-items: center; flex-direction: column; z-index: 9999;
+            background: #050510; color: #ff00ff; text-align: center; justify-content: center; align-items: center; flex-direction: column; z-index: 9998;
         }
         @media (orientation: portrait) { #rotate-message { display: flex; } }
     </style>
 </head>
 <body>
+
+    <div id="rotate-message">
+        <h2>🔄 ПЕРЕВЕРНИ ТЕЛЕФОН</h2>
+        <p style="color: #fff; margin-top: 8px;">Игра оптимизирована под горизонтальный режим!</p>
+    </div>
+
+    <div id="status-screen">
+        <h2 id="status-title" style="text-shadow: 0 0 10px #00ffcc;">ПОДКЛЮЧЕНИЕ К КОСМОСУ...</h2>
+        <p id="status-text" style="color: #fff; margin-top: 15px; font-size: 13px; max-width: 500px; line-height: 1.5; background: #111; padding: 12px; border-radius: 6px; border: 1px solid #333;"></p>
+    </div>
+
+    <div id="game-container">
+        <div id="ui-layer">
+            <div>ЛОКАЦИЯ: <span id="game-mode" style="color:#ff00ff;">Инициализация...</span></div>
+            <div style="margin-top: 8px; color: #a0aec0;">🌍 КОТЫ В СЕТИ (ОНЛАЙН):</div>
+            <div id="ranks" style="margin-top: 4px; color: #00ffcc; line-height: 1.4;">Загрузка списка игроков...</div>
+        </div>
+        <div id="jump-btn">▲</div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const modeDisplay = document.getElementById('game-mode');
+const ranksDisplay = document.getElementById('ranks');
+const jumpBtn = document.getElementById('jump-btn');
+const statusScreen = document.getElementById('status-screen');
+const statusTitle = document.getElementById('status-title');
+const statusText = document.getElementById('status-text');
+
+ctx.imageSmoothingEnabled = false;
+
+// ===================================================================
+// 🛠️ НАСТРОЙКА ТВОИХ СОБСТВЕННЫХ ТЕКСТУР
+// Сюда ты можешь вставить прямые ссылки на PNG/JPG картинки из интернета.
+// Если оставить строки пустыми, включится встроенная пиксельная графика.
+// ===================================================================
+const TEXTURES_CONFIG = {
+    cat: '',       // Текстура твоего кота (Рекомендуемый размер: 36x42 пикселя)
+    platform: '',  // Текстура парящих блоков (Будет размножаться по длине платформы)
+    crystal: ''    // Текстура собираемых кристаллов (Рекомендуемый размер: 16x16 пикселей)
+};
+
+const textures = {};
+let loadedImages = 0;
+let totalImages = 0;
+let useSprites = false;
+
+// Проверяем и запускаем загрузку текстур, если ссылки указаны
+for (let key in TEXTURES_CONFIG) {
+    if (TEXTURES_CONFIG[key].trim() !== '') {
+        totalImages++;
+        textures[key] = new Image();
+        textures[key].src = TEXTURES_CONFIG[key];
+        textures[key].onload = () => {
+            loadedImages++;
+            if (loadedImages === totalImages) useSprites = true;
+        };
+        textures[key].onerror = () => {
+            console.log(`Не удалось загрузить текстуру: ${key}. Использован стандартный пиксель-арт.`);
+        };
+    }
+}
+
+// ===================================================================
+// 🌍 СЕТЕВАЯ ИНТЕГРАЦИЯ (Твоя личная ссылка на Render)
+// ===================================================================
+statusText.innerText = "Устанавливаем связь с сервером на Render...\nПожалуйста, подожди. Если сервер спал, запуск может занять до 30 секунд.";
+
+const socket = io('https://platforma-idiakanta.onrender.com', {
+    timeout: 30000,
+    reconnectionAttempts: 5
+}); 
+
+// Отслеживание сетевых событий и ошибок
+socket.on('connect', () => {
+    statusScreen.style.display = 'none'; // Скрываем загрузку при успешном коннекте
+    console.log("Успешное подключение к облачному серверу!");
+});
+
+socket.on('connect_error', (err) => {
+    statusTitle.innerText = "⚠️ ОШИБКА СЕТИ";
+    statusTitle.style.color = "#ff3333";
+    statusTitle.style.textShadow = "0 0 10px #ff0000";
+    statusText.innerText = "Не удалось подключиться к серверу.\n\nПроверь:\n1. Запущен ли твой веб-сервис на Render.\n2. Нет ли опечаток в ссылке.\n\nКод ошибки: " + err.message;
+});
+
+// Игровые параметры
+const gravity = 0.45;
+let platforms = [];
+let crystals = [];
+let cameraX = 0;
+let gameMode = "LOBBY";
+let frame = 0;
+
+// Структура локального игрока и контейнер оппонентов
+let me = { x: 100, y: 100, w: 36, h: 42, vx: 0, vy: 0, dir: 1, grounded: false, score: 0, name: "Ты 😎" };
+let opponents = {}; 
+let keys = { left: false, right: false, jump: false };
+
+// Сенсорные триггеры (Деление экрана на левую и правую зоны + Прыжок)
+window.addEventListener('pointerdown', (e) => {
+    if (e.target === jumpBtn) keys.jump = true;
+    else { if (e.clientX < window.innerWidth / 2) keys.left = true; else keys.right = true; }
+});
+window.addEventListener('pointerup', (e) => {
+    if (e.target === jumpBtn) keys.jump = false; else { keys.left = false; keys.right = false; }
+});
+
+// Обработка синхронизации игроков
+socket.on('currentPlayers', (serverPlayers) => {
+    Object.keys(serverPlayers).forEach((id) => { if (id !== socket.id) opponents[id] = serverPlayers[id]; });
+});
+socket.on('newPlayer', (data) => { opponents[data.id] = data.info; });
+socket.on('playerMoved', (data) => { if (opponents[data.id]) opponents[data.id] = data.info; });
+socket.on('playerDisconnected', (id) => { delete opponents[id]; });
+
+// Резервный пиксельный рендер блоков
+function drawStandardPlatform(x, y, w, h) {
+    ctx.fillStyle = '#1e1233';
+    ctx.fillRect(x, y, w, h);
+    let size = 8;
+    ctx.fillStyle = '#2d1b4d';
+    for (let bx = 0; bx < w; bx += size) {
+        for (let by = 0; by < h; by += size) {
+            if ((bx + by) % 32 === 0) ctx.fillRect(x + bx, y + by, size, size);
+        }
+    }
+    ctx.fillStyle = "#ff00bb"; // Верхняя неоновая грань
+    ctx.fillRect(x, y, w, 4);
+}
+
+function initLobby() {
+    gameMode = "LOBBY";
+    modeDisplay.innerText = "КОСМИЧЕСКИЙ ХАБ";
+    let floorY = canvas.height * 0.8;
+    platforms = [ { x: 0, y: floorY, w: 1000 }, { x: 350, y: floorY - 90, w: 220 } ];
+    crystals = [];
+}
+
+function initMatch() {
+    gameMode = "MATCH";
+    modeDisplay.innerText = "БЕЗДНА КРИСТАЛЛОВ";
+    let floorY = canvas.height * 0.75;
+    platforms = [
+        { x: 0, y: floorY, w: 400 },
+        { x: 520, y: floorY - 90, w: 250 },
+        { x: 900, y: floorY - 180, w: 350 }
+    ];
+    crystals = [{ x: 640, y: floorY - 130, active: true }, { x: 1050, y: floorY - 220, active: true }];
+}
+
+function resize() {
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+    if(gameMode === "LOBBY") initLobby(); else initMatch();
+}
+window.addEventListener('resize', resize);
+resize();
+
+function loop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    frame++;
+
+    // Фон глубокого космоса
+    ctx.fillStyle = "#04020d";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Звездная пыль
+    ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
+    for (let i = 0; i < 30; i++) {
+        let sx = (i * 350 - cameraX * 0.2) % canvas.width; if (sx < 0) sx += canvas.width;
+        ctx.fillRect(sx, (i * 41) % canvas.height, 2, 2);
+    }
+
+    // Движение и физика локального Кота
+    if (keys.left) { me.vx = -4.5; me.dir = -1; }
+    else if (keys.right) { me.vx = 4.5; me.dir = 1; }
+    else me.vx = 0;
+    if (keys.jump && me.grounded) { me.vy = -11.5; me.grounded = false; keys.jump = false; }
+    
+    me.vy += gravity; me.x += me.vx; me.y += me.vy; me.grounded = false;
+
+    // Расчет твердости платформ
+    platforms.forEach(plat => {
+        if (me.x + me.w > plat.x && me.x < plat.x + plat.w && me.y + me.h > plat.y && me.y + me.h - me.vy <= plat.y + 12) {
+            me.y = plat.y - me.h; me.vy = 0; me.grounded = true;
+        }
+    });
+    if (me.y > canvas.height + 120) { me.x = 100; me.y = 100; me.vy = 0; }
+
+    // Отправка данных на сервер Render
+    if (socket.connected) {
+        socket.emit('playerMovement', { x: me.x, y: me.y, dir: me.dir, gameMode: gameMode, score: me.score });
+    }
+
+    // Слежение камеры
+    cameraX = me.x - canvas.width / 3;
+    if (cameraX < 0) cameraX = 0;
+
+    // Ворота перехода в матч (в Лобби на отметке x > 820)
+    if (gameMode === "LOBBY" && me.x > 820) { initMatch(); return; }
+
+    // Отрисовка Платформ (Текстура или Встроенная графика)
+    platforms.forEach(plat => {
+        if (useSprites && textures.platform) {
+            ctx.drawImage(textures.platform, plat.x - cameraX, plat.y, plat.w, 40);
+        } else {
+            drawStandardPlatform(plat.x - cameraX, plat.y, plat.w, 40);
+        }
+    });
+
+    // Отрисовка Кристаллов
+    crystals.forEach(cry => {
+        if (!cry.active) return;
+        if (useSprites && textures.crystal) {
+            ctx.drawImage(textures.crystal, cry.x - cameraX, cry.y + Math.sin(frame * 0.1) * 3, 20, 20);
+        } else {
+            ctx.fillStyle = "#00ffcc";
+            ctx.fillRect(cry.x - cameraX, cry.y + Math.sin(frame * 0.1) * 3, 16, 16);
+        }
+        if (Math.abs(me.x - cry.x) < 32 && Math.abs(me.y - cry.y) < 32) {
+            cry.active = false; me.score += 100;
+            setTimeout(() => cry.active = true, 3000);
+        }
+    });
+
+    // Отрисовка ТЕБЯ
+    ctx.save();
+    ctx.translate(me.x - cameraX, me.y);
+    if (useSprites && textures.cat) {
+        ctx.drawImage(textures.cat, 0, 0, me.w, me.h);
+    } else {
+        ctx.fillStyle = "#e67e22"; ctx.fillRect(0, 0, me.w, me.h); // Рыжий скафандр
+        ctx.fillStyle = "#000"; ctx.fillRect(me.dir === 1 ? 16 : 2, 8, 18, 6); // Крутые очки
+    }
+    ctx.fillStyle = "#fff"; ctx.font = "bold 11px monospace"; ctx.fillText(me.name, me.w/2 - 10, -10);
+    ctx.restore();
+
+    // Отрисовка МИРОВЫХ ИГРОКОВ (тех, кто подключился к твоей ссылке)
+    let playersListHTML = `• Ты: <span style="color:#fff;">${me.score} XP</span><br>`;
+    Object.keys(opponents).forEach((id) => {
+        let p = opponents[id];
+        if (p.gameMode === gameMode) { 
+            playersListHTML += `• ${p.name}: <span style="color:#fff;">${p.score} XP</span><br>`;
+            
+            ctx.save();
+            ctx.translate(p.x - cameraX, p.y);
+            if (useSprites && textures.cat) {
+                ctx.drawImage(textures.cat, 0, 0, me.w, me.h);
+            } else {
+                ctx.fillStyle = "#8e44ad"; ctx.fillRect(0, 0, me.w, me.h); // Другие коты фиолетовые
+                ctx.fillStyle = "#000"; ctx.fillRect(p.dir === 1 ? 16 : 2, 8, 18, 6);
+            }
+            ctx.fillStyle = "#ff00ff"; ctx.font = "10px monospace"; ctx.fillText(p.name, 0, -10);
+            ctx.restore();
+        }
+    });
+    ranksDisplay.innerHTML = playersListHTML;
+
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
 
     <div id="rotate-message">
         <h2>🔄 ПЕРЕВЕРНИ ТЕЛЕФОН</h2>
